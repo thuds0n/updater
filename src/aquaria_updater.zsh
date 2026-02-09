@@ -10,7 +10,7 @@
 pick_source() {
 osascript <<EOD
     activate
-    set validFile to choose file with prompt "Select your existing Aquaria game:\n(Select 'Aquaria.app' for Mac, or 'Aquaria.exe' for Windows)" of type {"com.apple.application-bundle", "public.unix-executable", "com.microsoft.windows-executable"}
+    set validFile to choose file with prompt "Select your existing Aquaria game file:\n(Select 'Aquaria.app' for Mac, or 'Aquaria.exe' for Windows)" of type {"com.apple.application-bundle", "public.unix-executable", "com.microsoft.windows-executable"}
     return POSIX path of validFile
 EOD
 }
@@ -18,7 +18,7 @@ EOD
 pick_binary() {
 osascript <<EOD
     activate
-    set validFile to choose file with prompt "Select your custom ARM64 Aquaria Binary:" of type {"public.unix-executable"}
+    set validFile to choose file with prompt "Select your custom-built Aquaria binary:\n(Or cancel to use existing)" of type {"public.unix-executable"}
     return POSIX path of validFile
 EOD
 }
