@@ -11,6 +11,10 @@ ICON_FILE="src/updater.icns"
 PLIST_FILE="src/updater.plist"
 OUTPUT_DIR="build"
 
+# Updated app assets
+GAME_ICON="assets/aquariaOSE.icns"
+GAME_PLIST="assets/aquariaOSE.plist"
+
 # Colors for terminal output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -48,10 +52,21 @@ fi
 # Copy the app icon (.icns)
 if [[ -f "$ICON_FILE" ]]; then
     echo "Applying icon from $ICON_FILE"
-    # We rename it to AppIcon.icns to match the Info.plist key
-    cp "$ICON_FILE" "$APP_PATH/Contents/Resources/aquaria_updater.icns"
+    cp "$ICON_FILE" "$APP_PATH/Contents/Resources/updater.icns"
 else
     echo -e "${RED}Warning: $ICON_FILE not found. App will have a generic icon.${NC}"
+fi
+
+echo "Bundling game assets..."
+
+mkdir -p "$APP_PATH/Contents/Resources"
+
+if [[ -f "$GAME_ICON" ]]; then
+    cp "$GAME_ICON" "$APP_PATH/Contents/Resources/aquariaOSE.icns"
+fi
+
+if [[ -f "$GAME_PLIST" ]]; then
+    cp "$GAME_PLIST" "$APP_PATH/Contents/Resources/aquariaOSE.plist"
 fi
 
 # Finish message

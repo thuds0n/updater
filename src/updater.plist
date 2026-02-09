@@ -9,7 +9,7 @@
     <key>CFBundleIdentifier</key>
     <string>com.bit-blot.aquaria</string>
 	<key>CFBundleIconFile</key>
-	<string>aquaria_updater.icns</string>
+	<string>updater.icns</string>
 	<key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundlePackageType</key>
