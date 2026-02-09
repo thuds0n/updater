@@ -5,22 +5,22 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>English</string>
 	<key>CFBundleExecutable</key>
-	<string>updater.sh</string>
+	<string>aquaria</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.bit-blot.aquaria</string>
 	<key>CFBundleIconFile</key>
-	<string>aquaria.icns</string>
+	<string>aquariaOSE.icns</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleSignature</key>
-	<string>Aqou</string>
+	<string>Aqra</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.1.3+</string>
 	<key>CSResourcesFileMapped</key>
 	<true/>
 	<key>CFBundleName</key>
-	<string>Aquaria-opensource-updater</string>
+	<string>AquariaOSE</string>
 </dict>
 </plist>
