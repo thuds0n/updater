@@ -6,7 +6,7 @@
 
 # Configuration
 APP_NAME="Aquaria Updater"
-SOURCE_SCRIPT="src/aquaria_updater.zsh"
+SOURCE_SCRIPT="src/updater_runtime.zsh"
 ICON_FILE="src/updater.icns"
 PLIST_FILE="src/updater.plist"
 OUTPUT_DIR="build"
