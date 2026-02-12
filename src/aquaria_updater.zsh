@@ -57,6 +57,9 @@ show_success() {
 
 # Set target app path
 TARGET_APP="/Applications/AquariaOSE.app"
+RUN_DIR=$(mktemp -d)
+BUILD_APP="$RUN_DIR/AquariaOSE.app"
+trap 'rm -rf "$RUN_DIR"' EXIT
 
 # Locate the directory where the script is running (.app/Contents/MacOS)
 SCRIPT_DIR="${0:A:h}"
@@ -65,7 +68,7 @@ SCRIPT_DIR="${0:A:h}"
 RESOURCES_DIR="$SCRIPT_DIR/../Resources"
 
 # Locate the .app wrapper
-APP_BUNDLE_DIR="${SCRIPT_PATH:h:h:h}"
+APP_BUNDLE_DIR="${SCRIPT_DIR:h:h}"
 
 # Locate the bundled update files
 UPDATE_FILES="$RESOURCES_DIR/files"
@@ -108,29 +111,24 @@ fi
 # 2. CONSTRUCTION
 # =============================================================================
 
-notify "Building AquariaOSE in Applications folder..."
-
-# Clean old version
-if [ -d "$TARGET_APP" ]; then
-    rm -rf "$TARGET_APP"
-fi
+notify "Building AquariaOSE in staging area..."
 
 # Create Target Directory
-mkdir -p "$TARGET_APP"
+mkdir -p "$BUILD_APP"
 
 # Copy Contents directory
 notify "Copying game files..."
 if [ -d "$SRC_ROOT/Contents" ] && [ "$IS_BUNDLED_INSTALLER" = false ]; then
-    cp -R "$SRC_ROOT/Contents" "$TARGET_APP/"
+    cp -R "$SRC_ROOT/Contents" "$BUILD_APP/"
 else
     # Build macOS structure if data bundled or Windows source
-    mkdir -p "$TARGET_APP/Contents/Resources"
-    mkdir -p "$TARGET_APP/Contents/MacOS"
+    mkdir -p "$BUILD_APP/Contents/Resources"
+    mkdir -p "$BUILD_APP/Contents/MacOS"
 fi
 
 # Copy required game folders if they exist
 for f in data gfx mus scripts sfx vox _mods; do
-    if [ -d "$UPDATE_FILES/$f" ]; then cp -R "$UPDATE_FILES/$f" "$TARGET_APP/"; fi
+    if [ -d "$UPDATE_FILES/$f" ]; then cp -R "$UPDATE_FILES/$f" "$BUILD_APP/"; fi
 done
 
 # Copy custom assets to updated app bundle
@@ -138,15 +136,15 @@ notify "Applying custom icon and metadata..."
 
 # Copy Info.plist
 if [[ -f "$RESOURCES_DIR/aquariaOSE.plist" ]]; then
-    cp "$RESOURCES_DIR/aquariaOSE.plist" "$TARGET_APP/Contents/Info.plist"
+    cp "$RESOURCES_DIR/aquariaOSE.plist" "$BUILD_APP/Contents/Info.plist"
 else
     echo "Warning: aquariaOSE.plist not found in bundle."
 fi
 
 # Copy Icon
 if [[ -f "$RESOURCES_DIR/aquariaOSE.icns" ]]; then
-    mkdir -p "$TARGET_APP/Contents/Resources"
-    cp "$RESOURCES_DIR/aquariaOSE.icns" "$TARGET_APP/Contents/Resources/aquariaOSE.icns"
+    mkdir -p "$BUILD_APP/Contents/Resources"
+    cp "$RESOURCES_DIR/aquariaOSE.icns" "$BUILD_APP/Contents/Resources/aquariaOSE.icns"
 else
     echo "Warning: aquariaOSE.icns not found in bundle."
 fi
@@ -155,7 +153,7 @@ fi
 # BINARY HANDLING
 # =============================================================================
 
-BINARY_DEST="$TARGET_APP/Contents/MacOS/aquaria"
+BINARY_DEST="$BUILD_APP/Contents/MacOS/aquaria"
 BUNDLED_BINARY="$RESOURCES_DIR/aquaria"
 
 if [[ -f "$BUNDLED_BINARY" ]]; then
@@ -191,22 +189,19 @@ fi
 
 if [ "$IS_BUNDLED_INSTALLER" = false ]; then
     # Create a temporary directory for downloads and extraction
-    TEMP_DIR=$(mktemp -d)
-
-    # Set a trap so the temp folder is deleted even if the user quits or the script errors out
-    trap 'rm -rf "$TEMP_DIR"' EXIT
+    TEMP_DIR="$RUN_DIR/download"
+    mkdir -p "$TEMP_DIR"
     
     # Download repo zip from GitHub
     notify "Downloading $BRANCH branch..."
-    curl -L -o "$TEMP_DIR/repo.zip" "$REPO_URL"
-
-
-    if [ ! -f "$TEMP_DIR/repo.zip" ]; then
-        show_error "Download failed. Check internet."
+    if ! curl -fL --retry 3 --connect-timeout 10 -o "$TEMP_DIR/repo.zip" "$REPO_URL"; then
+        show_error "Download failed. Check internet and selected branch."
     fi
 
     # Unzip
-    unzip -q "$TEMP_DIR/repo.zip" -d "$TEMP_DIR"
+    if ! unzip -q "$TEMP_DIR/repo.zip" -d "$TEMP_DIR"; then
+        show_error "Failed to extract downloaded update files."
+    fi
     EXTRACTED_FOLDER="$TEMP_DIR/Aquaria-$BRANCH"
 
     if [ ! -d "$EXTRACTED_FOLDER/files" ]; then
@@ -216,15 +211,15 @@ if [ "$IS_BUNDLED_INSTALLER" = false ]; then
     notify "Merging updated scripts and data..."
 
     # Merge Git Files
-    DEST_RESOURCES="$TARGET_APP/"
+    DEST_RESOURCES="$BUILD_APP/"
 
     # Ensure destination exists (it should from Step 2a)
     mkdir -p "$DEST_RESOURCES"
 
     # Merge
-    cp -R "$EXTRACTED_FOLDER/files/" "$DEST_RESOURCES/"
+    cp -R "$EXTRACTED_FOLDER/files/." "$DEST_RESOURCES/"
 
-    # Cleanup
+    # Cleanup download workspace now that merge is complete
     rm -rf "$TEMP_DIR"
 fi
 
@@ -241,11 +236,24 @@ fi
 notify "Signing app..."
 
 if command -v xattr &> /dev/null; then
-    xattr -cr "$TARGET_APP"
+    xattr -cr "$BUILD_APP"
 fi
 
 if command -v codesign &> /dev/null; then
-    codesign --force --deep -s - "$TARGET_APP" &> /dev/null
+    codesign --force --deep -s - "$BUILD_APP" &> /dev/null
+fi
+
+# Deploy staged app
+notify "Installing to Applications..."
+
+if [ -d "$TARGET_APP" ]; then
+    if ! rm -rf "$TARGET_APP"; then
+        show_error "Could not remove existing app from /Applications."
+    fi
+fi
+
+if ! mv "$BUILD_APP" "$TARGET_APP"; then
+    show_error "Install failed while moving updated app to /Applications."
 fi
 
 # Success message

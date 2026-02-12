@@ -2,12 +2,12 @@
 
 A small Zsh-based utility to automatically patch an Aquaria installation for macOS.
 
-This tool uses the [Aquaria Open Source Edition repository](https://github.com/AquariaOSE/AquariaOSE).
+This tool uses the [Aquaria Open Source Edition repository](https://github.com/AquariaOSE/Aquaria).
 
 ## Overview
 
 - Merges Open Source Edition assets into an existing installation.
-- Supports macOS .app bundles, Windows folders, and Linux installs as a source.
+- Supports macOS `.app` bundles and executable-based sources.
 - Prepares a clean AquariaOSE.app, suitable for modern macOS.
 
 ## Repository layout
@@ -20,7 +20,7 @@ This tool uses the [Aquaria Open Source Edition repository](https://github.com/A
 │   ├── updater.icns
 │   └── updater.plist
 └── assets/                  # New OSE metadata and icon
-    ├── aquariaOSEicon.icns
+    ├── aquariaOSE.icns
     └── aquariaOSE.plist
 ```
 
@@ -48,7 +48,7 @@ This tool uses the [Aquaria Open Source Edition repository](https://github.com/A
 1. Launch the `Aquaria Updater.app`
 2. Select your source installation (i.e. `Aquaria.app`)
 3. Choose Aquaria OSE update branch (*main* or *experimental*)
-4. Optionally provide a new binary to replace exiting (required if using ARM64)
+4. Optionally provide a new binary to replace existing (required if using ARM64)
 5. The updated `AquariaOSE.app` will be created in `/Applications`
 
 ## Architecture Support
