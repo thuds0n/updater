@@ -1,7 +1,7 @@
 #!/bin/zsh
 
 # =============================================================================
-# Aquaria OSE Updater
+# Aquaria Open Source Edition (OSE) Updater for macOS
 # Target: /Applications/AquariaOSE.app
 # =============================================================================
 
@@ -51,8 +51,64 @@ show_success() {
     osascript -e "activate" -e "display dialog \"✅ Update Complete!\n\n$msg\" buttons {\"OK\"} default button 1 with icon note"
 }
 
+detect_binary_archs() {
+    local binary_path="$1"
+    local archs=""
+    local file_info=""
+
+    if command -v lipo >/dev/null 2>&1; then
+        archs=$(lipo -archs "$binary_path" 2>/dev/null)
+    fi
+
+    if [ -z "$archs" ] && command -v file >/dev/null 2>&1; then
+        file_info=$(file -b "$binary_path" 2>/dev/null)
+        [[ "$file_info" == *"i386"* ]] && archs="$archs i386"
+        [[ "$file_info" == *"x86_64"* ]] && archs="$archs x86_64"
+        [[ "$file_info" == *"arm64"* ]] && archs="$archs arm64"
+        archs="${archs# }"
+    fi
+
+    echo "$archs"
+}
+
+validate_binary_archs() {
+    local binary_path="$1"
+    local archs
+    local arch
+    local supported=false
+
+    archs=$(detect_binary_archs "$binary_path")
+    if [ -z "$archs" ]; then
+        show_error "Unable to detect binary architecture for: $binary_path"
+    fi
+
+    for arch in ${(z)archs}; do
+        case "$arch" in
+            i386|x86_64|arm64)
+                supported=true
+                ;;
+        esac
+    done
+
+    if [ "$supported" != true ]; then
+        show_error "Unsupported binary architecture: $archs. Expected one of i386, x86_64, or arm64."
+    fi
+
+    BINARY_ARCHS="$archs"
+}
+
+copy_sidecar_libraries() {
+    local source_dir="$1"
+    local dest_dir="$2"
+    local lib_item
+
+    for lib_item in "$source_dir"/*.dylib(N) "$source_dir"/*.framework(N) "$source_dir"/*.so(N); do
+        cp -R "$lib_item" "$dest_dir/" || show_error "Failed to copy sidecar library: ${lib_item:t}"
+    done
+}
+
 # =============================================================================
-# 1. SETUP & SELECTION
+# SETUP & SELECTION
 # =============================================================================
 
 # Set target app path
@@ -70,45 +126,32 @@ RESOURCES_DIR="$SCRIPT_DIR/../Resources"
 # Locate the .app wrapper
 APP_BUNDLE_DIR="${SCRIPT_DIR:h:h}"
 
-# Locate the bundled update files
-UPDATE_FILES="$RESOURCES_DIR/files"
+# Directory of updated OSE assets and/or binary
+UPDATED_ASSETS_DIR="$RESOURCES_DIR/files"
 
-# Check for bundled assets (Installer Mode)
-if [ -d "$RESOURCES_DIR/files" ]; then
-    echo "Found bundled assets inside Updater"
-    SRC_ROOT="$APP_BUNDLE_DIR"
-    IS_BUNDLED_INSTALLER=true
-    UPDATE_FILES="$RESOURCES_DIR/files"
-else
-    echo "No bundled assets found. Manual selection required."
-    IS_BUNDLED_INSTALLER=false
-    
-    # Select source
-    SOURCE_SELECTION=$(pick_source)
-    if [ -z "$SOURCE_SELECTION" ]; then exit 0; fi
+# Flag for whether this updater includes bundled updated game assets (release version)
+IS_RELEASE_VERSION=false
 
-    # If the user selected a GOG wrapper, dive inside to the real app
-    if [ -d "$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app" ]; then
-        notify "GOG Version detected. Extracting internal game..."
-        SOURCE_SELECTION="$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app"
-    fi
+# Select source
+SOURCE_SELECTION=$(pick_source)
+if [ -z "$SOURCE_SELECTION" ]; then exit 0; fi
 
-    SRC_ROOT="$SOURCE_SELECTION"
-    UPDATE_FILES="$SRC_ROOT"
-
+# If a file was selected (e.g. Aquaria.exe), use its containing folder as source root.
+if [ -f "$SOURCE_SELECTION" ]; then
+    SOURCE_SELECTION="${SOURCE_SELECTION:h}"
 fi
 
-if [ "$IS_BUNDLED_INSTALLER" = false ]; then
-    # Select AquariaOSE update branch (main or experimental)
-    BRANCH=$(pick_branch)
-    if [ "$BRANCH" = "CANCEL" ]; then exit 0; fi
-
-    # AquariaOSE Git repo
-    REPO_URL="https://github.com/AquariaOSE/Aquaria/archive/refs/heads/$BRANCH.zip"
+# If the user selected a GOG wrapper, dive inside to the real app
+if [ -d "$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app" ]; then
+    notify "GOG Version detected. Extracting internal game..."
+    SOURCE_SELECTION="$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app"
 fi
+
+# Directory of original game assets
+ORIGINAL_ASSETS_DIR="$SOURCE_SELECTION"
 
 # =============================================================================
-# 2. CONSTRUCTION
+# APP BUILD
 # =============================================================================
 
 notify "Building AquariaOSE in staging area..."
@@ -116,19 +159,34 @@ notify "Building AquariaOSE in staging area..."
 # Create Target Directory
 mkdir -p "$BUILD_APP"
 
-# Copy Contents directory
-notify "Copying game files..."
-if [ -d "$SRC_ROOT/Contents" ] && [ "$IS_BUNDLED_INSTALLER" = false ]; then
-    cp -R "$SRC_ROOT/Contents" "$BUILD_APP/"
-else
-    # Build macOS structure if data bundled or Windows source
-    mkdir -p "$BUILD_APP/Contents/Resources"
-    mkdir -p "$BUILD_APP/Contents/MacOS"
+# Build macOS app structure (binary/libs are installed separately)
+mkdir -p "$BUILD_APP/Contents/Resources"
+mkdir -p "$BUILD_APP/Contents/MacOS"
+mkdir -p "$BUILD_APP/Contents/Frameworks"
+
+
+# Verify original source assets exist in selected directory
+SOURCE_ASSET_ROOT="$ORIGINAL_ASSETS_DIR"
+FOUND_SOURCE_ASSET=false
+for f in data gfx mus scripts sfx vox; do
+    if [ -d "$SOURCE_ASSET_ROOT/$f" ]; then
+        FOUND_SOURCE_ASSET=true
+    else
+        echo "Asset folder '$f' not found in $SOURCE_ASSET_ROOT"
+        FOUND_SOURCE_ASSET=false
+        break
+    fi
+done
+
+# For source Mac app, prefer root but fall back to Contents/Resources if needed.
+if [ "$FOUND_SOURCE_ASSET" = false ] && [ -d "$ORIGINAL_ASSETS_DIR/Contents/Resources" ]; then
+    SOURCE_ASSET_ROOT="$ORIGINAL_ASSETS_DIR/Contents/Resources"
 fi
 
-# Copy required game folders if they exist
+# Copy original game asset folders and files from official installation
+notify "Copying original game files..."
 for f in data gfx mus scripts sfx vox _mods; do
-    if [ -d "$UPDATE_FILES/$f" ]; then cp -R "$UPDATE_FILES/$f" "$BUILD_APP/"; fi
+    if [ -d "$SOURCE_ASSET_ROOT/$f" ]; then cp -R "$SOURCE_ASSET_ROOT/$f" "$BUILD_APP/"; fi
 done
 
 # Copy custom assets to updated app bundle
@@ -149,45 +207,26 @@ else
     echo "Warning: aquariaOSE.icns not found in bundle."
 fi
 
+
 # =============================================================================
-# BINARY HANDLING
+# DOWNLOAD & MERGE GITHUB FILES
 # =============================================================================
 
-BINARY_DEST="$BUILD_APP/Contents/MacOS/aquaria"
-BUNDLED_BINARY="$RESOURCES_DIR/aquaria"
-
-if [[ -f "$BUNDLED_BINARY" ]]; then
-    echo "Using bundled binary..."
-    cp "$BUNDLED_BINARY" "$BINARY_DEST"
-    chmod +x "$BINARY_DEST"
+# Check if bundled assets are present (release version)
+if [ -d "$UPDATED_ASSETS_DIR" ]; then
+    echo "Found bundled OSE assets inside Updater"
+    IS_RELEASE_VERSION=true
 else
-    echo "No bundled binary found... Prompting for new binary"
-    SELECTED_BINARY=$(pick_binary)
-    
-    if [ ! -z "$SELECTED_BINARY" ]; then
-        notify "Installing selected binary..."
-        # Remove old binary (likely Intel)
-        rm -f "$BINARY_DEST"
-        # Copy new one
-        cp "$SELECTED_BINARY" "$BINARY_DEST"
-        chmod +x "$BINARY_DEST"
-    else
-        notify "No binary selected... Keeping original"
-    fi
-fi
+    echo "No OSE assets bundled in updater. Manual selection required."
+    IS_RELEASE_VERSION=false
 
-## TODO: Automatic arm64 binary compilation 
-# ARCH=$(uname -m)
-# if [[ "$ARCH" == "arm64" ]]; then
-#     # Prompt for ARM64 binary
-#     notify "Apple Silicon (arm64) detected."
-# fi
+    # Select AquariaOSE update branch (main or experimental)
+    BRANCH=$(pick_branch)
+    if [ "$BRANCH" = "CANCEL" ]; then exit 0; fi
 
-# =============================================================================
-# 4. DOWNLOAD & MERGE GITHUB FILES
-# =============================================================================
+    # AquariaOSE Git repo
+    REPO_URL="https://github.com/AquariaOSE/Aquaria/archive/refs/heads/$BRANCH.zip"
 
-if [ "$IS_BUNDLED_INSTALLER" = false ]; then
     # Create a temporary directory for downloads and extraction
     TEMP_DIR="$RUN_DIR/download"
     mkdir -p "$TEMP_DIR"
@@ -207,24 +246,60 @@ if [ "$IS_BUNDLED_INSTALLER" = false ]; then
     if [ ! -d "$EXTRACTED_FOLDER/files" ]; then
         show_error "Downloaded branch has no 'files' folder."
     fi
+    UPDATED_ASSETS_DIR="$EXTRACTED_FOLDER/files"
+fi
 
-    notify "Merging updated scripts and data..."
+# Merge updated OSE files (bundled assets or downloaded assets)
+notify "Merging updated scripts and data..."
 
-    # Merge Git Files
-    DEST_RESOURCES="$BUILD_APP/"
+DEST_RESOURCES="$BUILD_APP/"
 
-    # Ensure destination exists (it should from Step 2a)
-    mkdir -p "$DEST_RESOURCES"
+mkdir -p "$DEST_RESOURCES"
 
-    # Merge
-    cp -R "$EXTRACTED_FOLDER/files/." "$DEST_RESOURCES/"
+cp -R "$UPDATED_ASSETS_DIR/." "$DEST_RESOURCES/"
 
+if [ "$IS_RELEASE_VERSION" = false ]; then
     # Cleanup download workspace now that merge is complete
     rm -rf "$TEMP_DIR"
 fi
 
 # =============================================================================
-# 5. FINALIZE
+# BINARY HANDLING
+# =============================================================================
+
+BINARY_DEST="$BUILD_APP/Contents/MacOS/aquaria"
+FRAMEWORKS_DEST="$BUILD_APP/Contents/Frameworks"
+BUNDLED_BINARY="$RESOURCES_DIR/aquaria"
+BINARY_ARCHS=""
+
+mkdir -p "$FRAMEWORKS_DEST"
+
+if [[ -f "$BUNDLED_BINARY" ]]; then
+    echo "Using bundled binary..."
+    validate_binary_archs "$BUNDLED_BINARY"
+    cp "$BUNDLED_BINARY" "$BINARY_DEST"
+    chmod +x "$BINARY_DEST"
+    copy_sidecar_libraries "${BUNDLED_BINARY:h}" "$FRAMEWORKS_DEST"
+else
+    echo "No bundled binary found... Prompting for new binary"
+    SELECTED_BINARY=$(pick_binary)
+    
+    if [ ! -z "$SELECTED_BINARY" ]; then
+        notify "Installing selected binary..."
+        validate_binary_archs "$SELECTED_BINARY"
+        # Remove old binary (likely Intel)
+        rm -f "$BINARY_DEST"
+        # Copy new one
+        cp "$SELECTED_BINARY" "$BINARY_DEST"
+        chmod +x "$BINARY_DEST"
+        copy_sidecar_libraries "${SELECTED_BINARY:h}" "$FRAMEWORKS_DEST"
+    else
+        show_error "No binary selected. A compatible i386, x86_64, or arm64 binary is required."
+    fi
+fi
+
+# =============================================================================
+# FINALISE
 # =============================================================================
 
 # Ensure binary executable (redundant check)
@@ -257,4 +332,8 @@ if ! mv "$BUILD_APP" "$TARGET_APP"; then
 fi
 
 # Success message
-show_success "Update Complete! AquariaOSE is ready in your Applications folder."
+if [ -n "$BINARY_ARCHS" ]; then
+    show_success "Update Complete! AquariaOSE is ready in your Applications folder.\nInstalled binary architectures: $BINARY_ARCHS"
+else
+    show_success "Update Complete! AquariaOSE is ready in your Applications folder."
+fi
