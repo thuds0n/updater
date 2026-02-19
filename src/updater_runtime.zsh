@@ -10,8 +10,14 @@
 pick_source() {
 osascript <<EOD
     activate
-    set validFile to choose file with prompt "Select your existing Aquaria game file:\n(Select 'Aquaria.app' for Mac, or 'Aquaria.exe' for Windows)" of type {"com.apple.application-bundle", "public.unix-executable", "com.microsoft.windows-executable"}
-    return POSIX path of validFile
+    set sourceMode to choose from list {"Mac app or executable file", "Windows/Linux game folder"} with prompt "Choose source type:" default items "Mac app or executable file"
+    if sourceMode is false then return ""
+    if (item 1 of sourceMode) is "Windows/Linux game folder" then
+        set selectedItem to choose folder with prompt "Select your Aquaria game folder"
+    else
+        set selectedItem to choose file with prompt "Select your existing Aquaria game installation:\n(Select 'Aquaria.app' for Mac, Aquaria.exe for Windows of aquaria executable file)" of type {"com.apple.application-bundle", "public.unix-executable", "com.microsoft.windows-executable"}
+    end if
+    return POSIX path of selectedItem
 EOD
 }
 
@@ -107,6 +113,29 @@ copy_sidecar_libraries() {
     done
 }
 
+required_assets_exist() {
+    local root_dir="$1"
+    local f
+    for f in data gfx mus scripts sfx vox; do
+        if [ ! -d "$root_dir/$f" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+missing_required_assets() {
+    local root_dir="$1"
+    local missing=()
+    local f
+    for f in data gfx mus scripts sfx vox; do
+        if [ ! -d "$root_dir/$f" ]; then
+            missing+=("$f")
+        fi
+    done
+    echo "${(j:, :)missing}"
+}
+
 # =============================================================================
 # SETUP & SELECTION
 # =============================================================================
@@ -135,20 +164,49 @@ IS_RELEASE_VERSION=false
 # Select source
 SOURCE_SELECTION=$(pick_source)
 if [ -z "$SOURCE_SELECTION" ]; then exit 0; fi
+##TODO: add error message if user selects invalid file type or cancels out of selection
 
-# If a file was selected (e.g. Aquaria.exe), use its containing folder as source root.
-if [ -f "$SOURCE_SELECTION" ]; then
-    SOURCE_SELECTION="${SOURCE_SELECTION:h}"
+# Determine directory of original game assets
+ORIGINAL_ASSETS_DIR=""
+
+# Handling for Mac .app or Windows/Linux folder selection - check the selected folder for required assets
+if required_assets_exist "$SOURCE_SELECTION"; then
+    ORIGINAL_ASSETS_DIR="$SOURCE_SELECTION"
+
+# Handling for .app selection
+elif [[ "$SOURCE_SELECTION" == *.app ]]; then
+    notify "Alternate Mac version detected"
+    # Mac Ambrosia version
+    elif required_assets_exist "$SOURCE_SELECTION/Contents/Resources"; then
+        ORIGINAL_ASSETS_DIR="$SOURCE_SELECTION/Contents/Resources"
+    # Mac GOG version
+    elif required_assets_exist "$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app"; then
+        ORIGINAL_ASSETS_DIR="$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app"
+    else
+        MISSING_ASSET_FOLDERS=$(missing_required_assets "$SOURCE_SELECTION")
+        show_error "Required asset folders are missing from Mac .app.\nChecked:\n$SOURCE_SELECTION (missing: $MISSING_ASSET_FOLDERS)"
+    fi
+
+# Handling for Windows/Linux executable file selection - use containing folder as source root
+elif [ -f "$SOURCE_SELECTION" ] && required_assets_exist "${SOURCE_SELECTION:h}"; then
+    # Handling for Windows .exe
+    if [[ "$SOURCE_SELECTION" == *.exe ]]; then
+        notify "Windows executable detected. Using containing folder as source."
+        ORIGINAL_ASSETS_DIR="${SOURCE_SELECTION:h}"
+    # Handling for Linux executable (no extension)
+    elif [[ "$SOURCE_SELECTION" == *aquaria ]]; then
+        notify "Linux executable detected. Using containing folder as source."
+        ORIGINAL_ASSETS_DIR="${SOURCE_SELECTION:h}"
+    else
+        show_error "Selected file does not appear to be a valid Aquaria executable."
+    fi
 fi
 
-# If the user selected a GOG wrapper, dive inside to the real app
-if [ -d "$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app" ]; then
-    notify "GOG Version detected. Extracting internal game..."
-    SOURCE_SELECTION="$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app"
+# Exit with error if no valid source of original game assets was found
+if [ -z "$ORIGINAL_ASSETS_DIR" ]; then
+    show_error "Invalid selection: $SOURCE_SELECTION\n"
+    exit 0
 fi
-
-# Directory of original game assets
-ORIGINAL_ASSETS_DIR="$SOURCE_SELECTION"
 
 # =============================================================================
 # APP BUILD
@@ -165,28 +223,10 @@ mkdir -p "$BUILD_APP/Contents/MacOS"
 mkdir -p "$BUILD_APP/Contents/Frameworks"
 
 
-# Verify original source assets exist in selected directory
-SOURCE_ASSET_ROOT="$ORIGINAL_ASSETS_DIR"
-FOUND_SOURCE_ASSET=false
-for f in data gfx mus scripts sfx vox; do
-    if [ -d "$SOURCE_ASSET_ROOT/$f" ]; then
-        FOUND_SOURCE_ASSET=true
-    else
-        echo "Asset folder '$f' not found in $SOURCE_ASSET_ROOT"
-        FOUND_SOURCE_ASSET=false
-        break
-    fi
-done
-
-# For source Mac app, prefer root but fall back to Contents/Resources if needed.
-if [ "$FOUND_SOURCE_ASSET" = false ] && [ -d "$ORIGINAL_ASSETS_DIR/Contents/Resources" ]; then
-    SOURCE_ASSET_ROOT="$ORIGINAL_ASSETS_DIR/Contents/Resources"
-fi
-
 # Copy original game asset folders and files from official installation
 notify "Copying original game files..."
 for f in data gfx mus scripts sfx vox _mods; do
-    if [ -d "$SOURCE_ASSET_ROOT/$f" ]; then cp -R "$SOURCE_ASSET_ROOT/$f" "$BUILD_APP/"; fi
+    if [ -d "$ORIGINAL_ASSETS_DIR/$f" ]; then cp -R "$ORIGINAL_ASSETS_DIR/$f" "$BUILD_APP/"; fi
 done
 
 # Copy custom assets to updated app bundle
