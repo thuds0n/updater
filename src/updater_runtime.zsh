@@ -359,7 +359,7 @@ fi
 if [ "$MODS_DOWNLOAD_REQUESTED" = true ]; then
     MODS_BRANCH="master"
 
-    # Download mods repo only when we cannot reuse the extracted OSE repo.
+    # Download mods from GitHub only when we cannot reuse the extracted OSE repo
     if [ "$IS_RELEASE_VERSION" = true ] || [ -z "$OSE_EXTRACTED_DIR" ] || [ ! -d "$OSE_EXTRACTED_DIR" ]; then
         TEMP_DIR="$RUN_DIR/download_mods"
 
@@ -368,21 +368,24 @@ if [ "$MODS_DOWNLOAD_REQUESTED" = true ]; then
         MODS_DOWNLOAD_STATUS=$?
         if [ $MODS_DOWNLOAD_STATUS -ne 0 ] || [ -z "$MODS_EXTRACTED_DIR" ]; then
             if [ $MODS_DOWNLOAD_STATUS -eq 12 ]; then
-                show_error "Failed to unzip downloaded mods files."
+                notify "Skipping optional mods: failed to unzip downloaded mods files."
             else
-                show_error "Failed to download mods files. Check internet and selected branch."
+                notify "Skipping optional mods: failed to download mods files."
             fi
+            MODS_DOWNLOAD_REQUESTED=false
         fi
     else
         MODS_EXTRACTED_DIR="$OSE_EXTRACTED_DIR"
     fi
 
-    if [ ! -d "$MODS_EXTRACTED_DIR/game_scripts/_mods" ]; then
+    if [ "$MODS_DOWNLOAD_REQUESTED" = true ] && [ ! -d "$MODS_EXTRACTED_DIR/game_scripts/_mods" ]; then
         show_error "Selected branch does not contain game_scripts/_mods."
     fi
 
-    notify "Adding optional mods..."
-    cp -R "$MODS_EXTRACTED_DIR/game_scripts/_mods" "$BUILD_APP/" || show_error "Failed to copy _mods into AquariaOSE.app"
+    if [ "$MODS_DOWNLOAD_REQUESTED" = true ]; then
+        notify "Adding optional mods..."
+        cp -R "$MODS_EXTRACTED_DIR/game_scripts/_mods" "$BUILD_APP/" || show_error "Failed to copy _mods into AquariaOSE.app"
+    fi
 fi
 
 # Merge updated OSE files (bundled assets or downloaded assets)
