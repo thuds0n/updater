@@ -17,7 +17,7 @@ panel.setCanChooseDirectories(true);
 panel.setAllowsMultipleSelection(false);
 panel.setResolvesAliases(true);
 panel.setTitle("Select Aquaria source");
-panel.setMessage("Select Aquaria.app (Mac), Aquaria.exe (Windows), linux aquaria binary, or a game directory.");
+panel.setMessage("REQUIRED: Select Aquaria.app (Mac), Aquaria.exe (Windows), Linux binary, or the Aquaria installation directory.");
 
 const result = panel.runModal();
 if (result === $.NSModalResponseOK) {
@@ -30,7 +30,7 @@ EOD
 pick_binary() {
 osascript <<EOD
     activate
-    set validFile to choose file with prompt "Select your custom-built Aquaria binary:" of type {"public.unix-executable"}
+    set validFile to choose file with prompt "REQUIRED:Select your custom-built Aquaria binary:" of type {"public.unix-executable"}
     return POSIX path of validFile
 EOD
 }
@@ -38,10 +38,18 @@ EOD
 pick_branch() {
 osascript <<EOD
     activate
-    set branchList to {"main", "experimental"}
-    set chosenBranch to choose from list branchList with prompt "Which AquariaOSE branch do you want to use?" default items "main"
+    set branchList to {"master", "experimental"}
+    set chosenBranch to choose from list branchList with prompt "Which AquariaOSE branch do you want to use?" default items "master"
     if chosenBranch is false then return "CANCEL"
     return item 1 of chosenBranch
+EOD
+}
+
+pick_include_mods() {
+osascript <<EOD
+    activate
+    set modChoice to button returned of (display dialog "No mods folder was found in the source game files.\n\nDo you want to download them? (These can then be activated in-game)" buttons {"No", "Yes"} default button "No")
+    return modChoice
 EOD
 }
 
@@ -142,6 +150,52 @@ missing_required_assets() {
     echo "${(j:, :)missing}"
 }
 
+resolve_original_assets_dir() {
+    local source_selection="$1"
+    local resolved_assets_dir=""
+
+    # Accept a source directory and check if it already contains required assets
+    if required_assets_exist "$source_selection"; then
+        resolved_assets_dir="$source_selection"
+
+    # Handling for .app selection
+    elif [[ "$source_selection" == *.app ]]; then
+        notify "Alternate Mac version detected"
+        # For Mac Ambrosia version, also support Contents/Resources layout
+        if required_assets_exist "$source_selection/Contents/Resources"; then
+            resolved_assets_dir="$source_selection/Contents/Resources"
+        # For wrapped macOS GOG version, support Contents/Resources/game/Aquaria.app layout
+        elif required_assets_exist "$source_selection/Contents/Resources/game/Aquaria.app"; then
+            resolved_assets_dir="$source_selection/Contents/Resources/game/Aquaria.app"
+        else
+            MISSING_ASSET_FOLDERS=$(missing_required_assets "$source_selection")
+            show_error "Required asset folders are missing from Mac .app.\nChecked:\n$source_selection (missing: $MISSING_ASSET_FOLDERS)"
+        fi
+
+    # For executable selections (Windows .exe or Linux binary), use containing folder
+    elif [ -f "$source_selection" ] && required_assets_exist "${source_selection:h}"; then
+        # Handling for Windows .exe
+        if [[ "$source_selection" == *.exe ]]; then
+            notify "Windows executable detected. Using containing folder as source."
+            resolved_assets_dir="${source_selection:h}"
+        # Handling for Linux executable (no extension)
+        elif [[ "${source_selection:t:l}" == "aquaria" ]]; then
+            notify "Linux executable detected. Using containing folder as source."
+            resolved_assets_dir="${source_selection:h}"
+        else
+            show_error "Selected file does not appear to be a valid Aquaria executable."
+        fi
+    fi
+
+    # Exit with error if no valid source of original game assets was found
+    if [ -z "$resolved_assets_dir" ]; then
+        show_error "Invalid selection: $source_selection\n"
+        exit 1
+    fi
+
+    echo "$resolved_assets_dir"
+}
+
 # =============================================================================
 # SETUP & SELECTION
 # =============================================================================
@@ -166,6 +220,8 @@ UPDATED_ASSETS_DIR="$RESOURCES_DIR/files"
 
 # Flag for whether this updater includes bundled updated game assets (release version)
 IS_RELEASE_VERSION=false
+BRANCH=""
+MODS_DOWNLOAD_REQUESTED=false
 
 # Select source
 SOURCE_SELECTION=$(pick_source)
@@ -175,46 +231,7 @@ if [ -z "$SOURCE_SELECTION" ]; then
 fi
 
 # Determine directory of original game assets
-ORIGINAL_ASSETS_DIR=""
-
-# Accept a source directory and check if it already contains required assets
-if required_assets_exist "$SOURCE_SELECTION"; then
-    ORIGINAL_ASSETS_DIR="$SOURCE_SELECTION"
-
-# Handling for .app selection
-elif [[ "$SOURCE_SELECTION" == *.app ]]; then
-    notify "Alternate Mac version detected"
-    # For Mac Ambrosia version, also support Contents/Resources layout
-    if required_assets_exist "$SOURCE_SELECTION/Contents/Resources"; then
-        ORIGINAL_ASSETS_DIR="$SOURCE_SELECTION/Contents/Resources"
-    # For wrapped macOS GOG version, support Contents/Resources/game/Aquaria.app layout
-    elif required_assets_exist "$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app"; then
-        ORIGINAL_ASSETS_DIR="$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app"
-    else
-        MISSING_ASSET_FOLDERS=$(missing_required_assets "$SOURCE_SELECTION")
-        show_error "Required asset folders are missing from Mac .app.\nChecked:\n$SOURCE_SELECTION (missing: $MISSING_ASSET_FOLDERS)"
-    fi
-
-    # For executable selections (Windows .exe or Linux binary), use containing folder
-elif [ -f "$SOURCE_SELECTION" ] && required_assets_exist "${SOURCE_SELECTION:h}"; then
-    # Handling for Windows .exe
-    if [[ "$SOURCE_SELECTION" == *.exe ]]; then
-        notify "Windows executable detected. Using containing folder as source."
-        ORIGINAL_ASSETS_DIR="${SOURCE_SELECTION:h}"
-    # Handling for Linux executable (no extension)
-    elif [[ "${SOURCE_SELECTION:t:l}" == "aquaria" ]]; then
-        notify "Linux executable detected. Using containing folder as source."
-        ORIGINAL_ASSETS_DIR="${SOURCE_SELECTION:h}"
-    else
-        show_error "Selected file does not appear to be a valid Aquaria executable."
-    fi
-fi
-
-# Exit with error if no valid source of original game assets was found
-if [ -z "$ORIGINAL_ASSETS_DIR" ]; then
-    show_error "Invalid selection: $SOURCE_SELECTION\n"
-    exit 0
-fi
+ORIGINAL_ASSETS_DIR=$(resolve_original_assets_dir "$SOURCE_SELECTION") || exit 1
 
 # =============================================================================
 # APP BUILD
@@ -236,6 +253,14 @@ notify "Copying original game files..."
 for f in data gfx mus scripts sfx vox _mods; do
     if [ -d "$ORIGINAL_ASSETS_DIR/$f" ]; then cp -R "$ORIGINAL_ASSETS_DIR/$f" "$BUILD_APP/"; fi
 done
+
+# Check if a mods folder was included in the original installation and offer to download if not
+if [ ! -d "$ORIGINAL_ASSETS_DIR/_mods" ]; then
+    INCLUDE_MODS=$(pick_include_mods)
+    if [[ "$INCLUDE_MODS" == "Yes" ]]; then
+        MODS_DOWNLOAD_REQUESTED=true
+    fi
+fi
 
 # Copy custom assets to updated app bundle
 notify "Applying custom icon and metadata..."
@@ -268,7 +293,7 @@ else
     echo "No OSE assets bundled in updater. Manual selection required."
     IS_RELEASE_VERSION=false
 
-    # Select AquariaOSE update branch (main or experimental)
+    # Select AquariaOSE update branch (master or experimental)
     BRANCH=$(pick_branch)
     if [ "$BRANCH" = "CANCEL" ]; then exit 0; fi
 
@@ -297,6 +322,49 @@ else
     UPDATED_ASSETS_DIR="$EXTRACTED_FOLDER/files"
 fi
 
+# Download mods from GitHub master branch if requested and not already included in bundled assets or original source
+if [ "$MODS_DOWNLOAD_REQUESTED" = true ]; then
+    MODS_BRANCH="master"
+
+    # If this is a bundled release flow, fetch branch repo now just for _mods.
+    if [ "$IS_RELEASE_VERSION" = true ]; then
+        REPO_URL="https://github.com/AquariaOSE/Aquaria/archive/refs/heads/$MODS_BRANCH.zip"
+        TEMP_DIR="$RUN_DIR/download_mods"
+        mkdir -p "$TEMP_DIR"
+
+        notify "Downloading $MODS_BRANCH branch for _mods..."
+        if ! curl -fL --retry 3 --connect-timeout 10 -o "$TEMP_DIR/repo.zip" "$REPO_URL"; then
+            show_error "Download failed while fetching _mods. Check internet and selected branch."
+        fi
+
+        if ! unzip -q "$TEMP_DIR/repo.zip" -d "$TEMP_DIR"; then
+            show_error "Failed to extract downloaded _mods files."
+        fi
+        EXTRACTED_FOLDER="$TEMP_DIR/Aquaria-$MODS_BRANCH"
+    elif [ -z "$EXTRACTED_FOLDER" ] || [ ! -d "$EXTRACTED_FOLDER" ]; then
+        REPO_URL="https://github.com/AquariaOSE/Aquaria/archive/refs/heads/$MODS_BRANCH.zip"
+        TEMP_DIR="$RUN_DIR/download_mods"
+        mkdir -p "$TEMP_DIR"
+
+        notify "Downloading $MODS_BRANCH branch for _mods..."
+        if ! curl -fL --retry 3 --connect-timeout 10 -o "$TEMP_DIR/repo.zip" "$REPO_URL"; then
+            show_error "Download failed while fetching _mods. Check internet and selected branch."
+        fi
+
+        if ! unzip -q "$TEMP_DIR/repo.zip" -d "$TEMP_DIR"; then
+            show_error "Failed to extract downloaded _mods files."
+        fi
+        EXTRACTED_FOLDER="$TEMP_DIR/Aquaria-$MODS_BRANCH"
+    fi
+
+    if [ ! -d "$EXTRACTED_FOLDER/game_scripts/_mods" ]; then
+        show_error "Selected branch does not contain game_scripts/_mods."
+    fi
+
+    notify "Adding optional _mods..."
+    cp -R "$EXTRACTED_FOLDER/game_scripts/_mods" "$BUILD_APP/" || show_error "Failed to copy _mods into AquariaOSE.app"
+fi
+
 # Merge updated OSE files (bundled assets or downloaded assets)
 notify "Merging updated scripts and data..."
 
@@ -304,9 +372,17 @@ DEST_RESOURCES="$BUILD_APP/"
 
 mkdir -p "$DEST_RESOURCES"
 
+if [ ! -d "$UPDATED_ASSETS_DIR" ]; then
+    show_error "Updated OSE assets directory not found:\n$UPDATED_ASSETS_DIR"
+fi
+
+if [ ! -d "$UPDATED_ASSETS_DIR/data" ]; then
+    show_error "Updated OSE assets are incomplete.\nChecked:\n$UPDATED_ASSETS_DIR\nMissing required folder: data"
+fi
+
 cp -R "$UPDATED_ASSETS_DIR/." "$DEST_RESOURCES/"
 
-if [ "$IS_RELEASE_VERSION" = false ]; then
+if [ "$IS_RELEASE_VERSION" = false ] || [ "$MODS_DOWNLOAD_REQUESTED" = true ]; then
     # Cleanup download workspace now that merge is complete
     rm -rf "$TEMP_DIR"
 fi

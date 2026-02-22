@@ -63,7 +63,7 @@ This tool is a companion to the [Aquaria Open Source Edition repository](https:/
 
 1. Launch the `Aquaria Updater.app`
 2. Select your source installation (i.e. `Aquaria.app`)
-3. Choose your preferred Aquaria OSE update branch (*main* or *experimental*)
+3. Choose your preferred Aquaria OSE update branch (*master* or *experimental*)
 4. Select your new compatible Aquaria binary (compiled from the OSE source)
 5. Find `AquariaOSE.app` in your `Applications` folder
 
