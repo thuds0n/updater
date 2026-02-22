@@ -8,29 +8,31 @@
 # --- HELPER FUNCTIONS ---
 
 pick_source() {
-osascript -l JavaScript <<'EOD'
-ObjC.import('AppKit');
+osascript <<'EOD'
+use scripting additions
 
-const panel = $.NSOpenPanel.openPanel;
-panel.setCanChooseFiles(true);
-panel.setCanChooseDirectories(true);
-panel.setAllowsMultipleSelection(false);
-panel.setResolvesAliases(true);
-panel.setTitle("Select Aquaria source");
-panel.setMessage("REQUIRED: Select Aquaria.app (Mac), Aquaria.exe (Windows), Linux binary, or the Aquaria installation directory.");
+set pickerPrompt to "REQUIRED: Select Aquaria.app (Mac), Aquaria.exe (Windows), Linux binary, or the Aquaria installation directory."
 
-const result = panel.runModal();
-if (result === $.NSModalResponseOK) {
-  const url = panel.URLs.objectAtIndex(0);
-  console.log(ObjC.unwrap(url.path));
-}
+try
+    activate
+    set chosenItem to choose file with prompt pickerPrompt
+    return POSIX path of chosenItem
+on error number -128
+    try
+        activate
+        set chosenFolder to choose folder with prompt pickerPrompt
+        return POSIX path of chosenFolder
+    on error number -128
+        return ""
+    end try
+end try
 EOD
 }
 
 pick_binary() {
 osascript <<EOD
     activate
-    set validFile to choose file with prompt "REQUIRED:Select your custom-built Aquaria binary:" of type {"public.unix-executable"}
+    set validFile to choose file with prompt "REQUIRED: Select your custom-built Aquaria binary:" of type {"public.unix-executable"}
     return POSIX path of validFile
 EOD
 }
@@ -51,6 +53,31 @@ osascript <<EOD
     set modChoice to button returned of (display dialog "No mods folder was found in the source game files.\n\nDo you want to download them? (These can then be activated in-game)" buttons {"No", "Yes"} default button "No")
     return modChoice
 EOD
+}
+
+download_repo_branch_zip() {
+    local branch_name="$1"
+    local temp_dir="$2"
+    local repo_url="https://github.com/AquariaOSE/Aquaria/archive/refs/heads/$branch_name.zip"
+
+    mkdir -p "$temp_dir"
+    if ! curl -fL --retry 3 --connect-timeout 10 -o "$temp_dir/repo.zip" "$repo_url"; then
+        return 11
+    fi
+
+    if ! unzip -q "$temp_dir/repo.zip" -d "$temp_dir"; then
+        return 12
+    fi
+
+    echo "$temp_dir/Aquaria-$branch_name"
+}
+
+copy_dir_if_present() {
+    local source_dir="$1"
+    local dest_dir="$2"
+    if [ -d "$source_dir" ]; then
+        cp -R "$source_dir" "$dest_dir/" || show_error "Failed to copy directory: ${source_dir:t}"
+    fi
 }
 
 notify() {
@@ -220,8 +247,17 @@ UPDATED_ASSETS_DIR="$RESOURCES_DIR/files"
 
 # Flag for whether this updater includes bundled updated game assets (release version)
 IS_RELEASE_VERSION=false
+
+# Variable to hold selected branch (if not release version)
 BRANCH=""
+
+# Flag for whether the user requested to download mods (if not included in original source or bundled assets)
 MODS_DOWNLOAD_REQUESTED=false
+
+# Directories for downloaded and extracted GitHub assets (if needed)
+TEMP_DIR=""
+OSE_EXTRACTED_DIR=""
+MODS_EXTRACTED_DIR=""
 
 # Select source
 SOURCE_SELECTION=$(pick_source)
@@ -251,16 +287,8 @@ mkdir -p "$BUILD_APP/Contents/Frameworks"
 # Copy original game asset folders and files from official installation
 notify "Copying original game files..."
 for f in data gfx mus scripts sfx vox _mods; do
-    if [ -d "$ORIGINAL_ASSETS_DIR/$f" ]; then cp -R "$ORIGINAL_ASSETS_DIR/$f" "$BUILD_APP/"; fi
+    copy_dir_if_present "$ORIGINAL_ASSETS_DIR/$f" "$BUILD_APP"
 done
-
-# Check if a mods folder was included in the original installation and offer to download if not
-if [ ! -d "$ORIGINAL_ASSETS_DIR/_mods" ]; then
-    INCLUDE_MODS=$(pick_include_mods)
-    if [[ "$INCLUDE_MODS" == "Yes" ]]; then
-        MODS_DOWNLOAD_REQUESTED=true
-    fi
-fi
 
 # Copy custom assets to updated app bundle
 notify "Applying custom icon and metadata..."
@@ -298,71 +326,63 @@ else
     if [ "$BRANCH" = "CANCEL" ]; then exit 0; fi
 
     # AquariaOSE Git repo
-    REPO_URL="https://github.com/AquariaOSE/Aquaria/archive/refs/heads/$BRANCH.zip"
-
     # Create a temporary directory for downloads and extraction
     TEMP_DIR="$RUN_DIR/download"
-    mkdir -p "$TEMP_DIR"
     
     # Download repo zip from GitHub
     notify "Downloading $BRANCH branch..."
-    if ! curl -fL --retry 3 --connect-timeout 10 -o "$TEMP_DIR/repo.zip" "$REPO_URL"; then
-        show_error "Download failed. Check internet and selected branch."
+    OSE_EXTRACTED_DIR=$(download_repo_branch_zip "$BRANCH" "$TEMP_DIR")
+    OSE_DOWNLOAD_STATUS=$?
+    if [ $OSE_DOWNLOAD_STATUS -ne 0 ] || [ -z "$OSE_EXTRACTED_DIR" ]; then
+        if [ $OSE_DOWNLOAD_STATUS -eq 12 ]; then
+            show_error "Failed to unzip downloaded update files."
+        else
+            show_error "Failed to download update files. Check internet and selected branch."
+        fi
     fi
 
-    # Unzip
-    if ! unzip -q "$TEMP_DIR/repo.zip" -d "$TEMP_DIR"; then
-        show_error "Failed to extract downloaded update files."
-    fi
-    EXTRACTED_FOLDER="$TEMP_DIR/Aquaria-$BRANCH"
-
-    if [ ! -d "$EXTRACTED_FOLDER/files" ]; then
+    if [ ! -d "$OSE_EXTRACTED_DIR/files" ]; then
         show_error "Downloaded branch has no 'files' folder."
     fi
-    UPDATED_ASSETS_DIR="$EXTRACTED_FOLDER/files"
+    UPDATED_ASSETS_DIR="$OSE_EXTRACTED_DIR/files"
+fi
+
+# Check if a mods folder was included in the original installation and offer to download if not
+if [ ! -d "$ORIGINAL_ASSETS_DIR/_mods" ]; then
+    INCLUDE_MODS=$(pick_include_mods)
+    if [[ "$INCLUDE_MODS" == "Yes" ]]; then
+        MODS_DOWNLOAD_REQUESTED=true
+    fi
 fi
 
 # Download mods from GitHub master branch if requested and not already included in bundled assets or original source
 if [ "$MODS_DOWNLOAD_REQUESTED" = true ]; then
     MODS_BRANCH="master"
 
-    # If this is a bundled release flow, fetch branch repo now just for _mods.
-    if [ "$IS_RELEASE_VERSION" = true ]; then
-        REPO_URL="https://github.com/AquariaOSE/Aquaria/archive/refs/heads/$MODS_BRANCH.zip"
+    # Download mods repo only when we cannot reuse the extracted OSE repo.
+    if [ "$IS_RELEASE_VERSION" = true ] || [ -z "$OSE_EXTRACTED_DIR" ] || [ ! -d "$OSE_EXTRACTED_DIR" ]; then
         TEMP_DIR="$RUN_DIR/download_mods"
-        mkdir -p "$TEMP_DIR"
 
-        notify "Downloading $MODS_BRANCH branch for _mods..."
-        if ! curl -fL --retry 3 --connect-timeout 10 -o "$TEMP_DIR/repo.zip" "$REPO_URL"; then
-            show_error "Download failed while fetching _mods. Check internet and selected branch."
+        notify "Downloading $MODS_BRANCH branch for mods..."
+        MODS_EXTRACTED_DIR=$(download_repo_branch_zip "$MODS_BRANCH" "$TEMP_DIR")
+        MODS_DOWNLOAD_STATUS=$?
+        if [ $MODS_DOWNLOAD_STATUS -ne 0 ] || [ -z "$MODS_EXTRACTED_DIR" ]; then
+            if [ $MODS_DOWNLOAD_STATUS -eq 12 ]; then
+                show_error "Failed to unzip downloaded mods files."
+            else
+                show_error "Failed to download mods files. Check internet and selected branch."
+            fi
         fi
-
-        if ! unzip -q "$TEMP_DIR/repo.zip" -d "$TEMP_DIR"; then
-            show_error "Failed to extract downloaded _mods files."
-        fi
-        EXTRACTED_FOLDER="$TEMP_DIR/Aquaria-$MODS_BRANCH"
-    elif [ -z "$EXTRACTED_FOLDER" ] || [ ! -d "$EXTRACTED_FOLDER" ]; then
-        REPO_URL="https://github.com/AquariaOSE/Aquaria/archive/refs/heads/$MODS_BRANCH.zip"
-        TEMP_DIR="$RUN_DIR/download_mods"
-        mkdir -p "$TEMP_DIR"
-
-        notify "Downloading $MODS_BRANCH branch for _mods..."
-        if ! curl -fL --retry 3 --connect-timeout 10 -o "$TEMP_DIR/repo.zip" "$REPO_URL"; then
-            show_error "Download failed while fetching _mods. Check internet and selected branch."
-        fi
-
-        if ! unzip -q "$TEMP_DIR/repo.zip" -d "$TEMP_DIR"; then
-            show_error "Failed to extract downloaded _mods files."
-        fi
-        EXTRACTED_FOLDER="$TEMP_DIR/Aquaria-$MODS_BRANCH"
+    else
+        MODS_EXTRACTED_DIR="$OSE_EXTRACTED_DIR"
     fi
 
-    if [ ! -d "$EXTRACTED_FOLDER/game_scripts/_mods" ]; then
+    if [ ! -d "$MODS_EXTRACTED_DIR/game_scripts/_mods" ]; then
         show_error "Selected branch does not contain game_scripts/_mods."
     fi
 
-    notify "Adding optional _mods..."
-    cp -R "$EXTRACTED_FOLDER/game_scripts/_mods" "$BUILD_APP/" || show_error "Failed to copy _mods into AquariaOSE.app"
+    notify "Adding optional mods..."
+    cp -R "$MODS_EXTRACTED_DIR/game_scripts/_mods" "$BUILD_APP/" || show_error "Failed to copy _mods into AquariaOSE.app"
 fi
 
 # Merge updated OSE files (bundled assets or downloaded assets)
