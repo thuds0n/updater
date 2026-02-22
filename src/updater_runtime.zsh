@@ -8,23 +8,29 @@
 # --- HELPER FUNCTIONS ---
 
 pick_source() {
-osascript <<EOD
-    activate
-    set sourceMode to choose from list {"Mac app or executable file", "Windows/Linux game folder"} with prompt "Choose source type:" default items "Mac app or executable file"
-    if sourceMode is false then return ""
-    if (item 1 of sourceMode) is "Windows/Linux game folder" then
-        set selectedItem to choose folder with prompt "Select your Aquaria game folder"
-    else
-        set selectedItem to choose file with prompt "Select your existing Aquaria game installation:\n(Select 'Aquaria.app' for Mac, Aquaria.exe for Windows of aquaria executable file)" of type {"com.apple.application-bundle", "public.unix-executable", "com.microsoft.windows-executable"}
-    end if
-    return POSIX path of selectedItem
+osascript -l JavaScript <<'EOD'
+ObjC.import('AppKit');
+
+const panel = $.NSOpenPanel.openPanel;
+panel.setCanChooseFiles(true);
+panel.setCanChooseDirectories(true);
+panel.setAllowsMultipleSelection(false);
+panel.setResolvesAliases(true);
+panel.setTitle("Select Aquaria source");
+panel.setMessage("Select Aquaria.app (Mac), Aquaria.exe (Windows), linux aquaria binary, or a game directory.");
+
+const result = panel.runModal();
+if (result === $.NSModalResponseOK) {
+  const url = panel.URLs.objectAtIndex(0);
+  console.log(ObjC.unwrap(url.path));
+}
 EOD
 }
 
 pick_binary() {
 osascript <<EOD
     activate
-    set validFile to choose file with prompt "Select your custom-built Aquaria binary:\n(Or cancel to use existing)" of type {"public.unix-executable"}
+    set validFile to choose file with prompt "Select your custom-built Aquaria binary:" of type {"public.unix-executable"}
     return POSIX path of validFile
 EOD
 }
@@ -163,23 +169,25 @@ IS_RELEASE_VERSION=false
 
 # Select source
 SOURCE_SELECTION=$(pick_source)
-if [ -z "$SOURCE_SELECTION" ]; then exit 0; fi
-##TODO: add error message if user selects invalid file type or cancels out of selection
+if [ -z "$SOURCE_SELECTION" ]; then
+    show_error "No source installation was selected."
+    exit 1
+fi
 
 # Determine directory of original game assets
 ORIGINAL_ASSETS_DIR=""
 
-# Handling for Mac .app or Windows/Linux folder selection - check the selected folder for required assets
+# Accept a source directory and check if it already contains required assets
 if required_assets_exist "$SOURCE_SELECTION"; then
     ORIGINAL_ASSETS_DIR="$SOURCE_SELECTION"
 
 # Handling for .app selection
 elif [[ "$SOURCE_SELECTION" == *.app ]]; then
     notify "Alternate Mac version detected"
-    # Mac Ambrosia version
-    elif required_assets_exist "$SOURCE_SELECTION/Contents/Resources"; then
+    # For Mac Ambrosia version, also support Contents/Resources layout
+    if required_assets_exist "$SOURCE_SELECTION/Contents/Resources"; then
         ORIGINAL_ASSETS_DIR="$SOURCE_SELECTION/Contents/Resources"
-    # Mac GOG version
+    # For wrapped macOS GOG version, support Contents/Resources/game/Aquaria.app layout
     elif required_assets_exist "$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app"; then
         ORIGINAL_ASSETS_DIR="$SOURCE_SELECTION/Contents/Resources/game/Aquaria.app"
     else
@@ -187,14 +195,14 @@ elif [[ "$SOURCE_SELECTION" == *.app ]]; then
         show_error "Required asset folders are missing from Mac .app.\nChecked:\n$SOURCE_SELECTION (missing: $MISSING_ASSET_FOLDERS)"
     fi
 
-# Handling for Windows/Linux executable file selection - use containing folder as source root
+    # For executable selections (Windows .exe or Linux binary), use containing folder
 elif [ -f "$SOURCE_SELECTION" ] && required_assets_exist "${SOURCE_SELECTION:h}"; then
     # Handling for Windows .exe
     if [[ "$SOURCE_SELECTION" == *.exe ]]; then
         notify "Windows executable detected. Using containing folder as source."
         ORIGINAL_ASSETS_DIR="${SOURCE_SELECTION:h}"
     # Handling for Linux executable (no extension)
-    elif [[ "$SOURCE_SELECTION" == *aquaria ]]; then
+    elif [[ "${SOURCE_SELECTION:t:l}" == "aquaria" ]]; then
         notify "Linux executable detected. Using containing folder as source."
         ORIGINAL_ASSETS_DIR="${SOURCE_SELECTION:h}"
     else
