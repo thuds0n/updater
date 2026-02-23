@@ -8,31 +8,49 @@
 # --- HELPER FUNCTIONS ---
 
 pick_source() {
-osascript <<'EOD'
-use scripting additions
+osascript <<EOD
+    use framework "AppKit"
+    use scripting additions
 
-set pickerPrompt to "REQUIRED: Select Aquaria.app (Mac), Aquaria.exe (Windows), Linux binary, or the Aquaria installation directory."
+    -- 1. Initialize the App context so the OS knows a GUI is coming
+    set theApp to current application's NSApplication's sharedApplication()
+    theApp's setActivationPolicy:(current application's NSApplicationActivationPolicyAccessory)
 
-try
-    activate
-    set chosenItem to choose file with prompt pickerPrompt
-    return POSIX path of chosenItem
-on error number -128
-    try
-        activate
-        set chosenFolder to choose folder with prompt pickerPrompt
-        return POSIX path of chosenFolder
-    on error number -128
+    -- 2. Create the panel
+    set panel to current application's NSOpenPanel's openPanel()
+    
+    -- Configure Panel
+    panel's setCanChooseFiles:true
+    panel's setCanChooseDirectories:true
+    panel's setAllowsMultipleSelection:false
+    panel's setResolvesAliases:true
+    panel's setTitle:"Select Aquaria source"
+    panel's setMessage:"\nREQUIRED: Select your Aquaria.app (Mac), Aquaria.exe (Windows), or installation directory."
+
+    set appsURL to current application's NSURL's fileURLWithPath:"/Applications"
+    panel's setDirectoryURL:appsURL
+
+    -- 3. FORCE the window to the front and keep it there
+    theApp's activateIgnoringOtherApps:true
+    
+    -- 4. Run the modal and capture the response
+    set theResult to panel's runModal()
+    
+    -- 1 is the value for NSModalResponseOK
+    if theResult is 1 then
+        set selectedURLs to panel's URLs()
+        set selectedURL to (selectedURLs's objectAtIndex:0)
+        return (selectedURL's |path|() as text)
+    else
         return ""
-    end try
-end try
+    end if
 EOD
 }
 
 pick_binary() {
 osascript <<EOD
     activate
-    set validFile to choose file with prompt "REQUIRED: Select your custom-built Aquaria binary:" of type {"public.unix-executable"}
+    set validFile to choose file with prompt "\nREQUIRED: Select your custom-built Aquaria binary" of type {"public.unix-executable"}
     return POSIX path of validFile
 EOD
 }
@@ -40,17 +58,19 @@ EOD
 pick_branch() {
 osascript <<EOD
     activate
-    set branchList to {"master", "experimental"}
-    set chosenBranch to choose from list branchList with prompt "Which AquariaOSE branch do you want to use?" default items "master"
+    set branchList to {"master (recommended)", "experimental"}
+    set chosenBranch to choose from list branchList with prompt "Which AquariaOSE branch do you want to use?" default items "master (recommended)"
     if chosenBranch is false then return "CANCEL"
-    return item 1 of chosenBranch
+    set selectedItem to item 1 of chosenBranch
+    if selectedItem is "master (recommended)" then return "master"
+    return selectedItem
 EOD
 }
 
 pick_include_mods() {
 osascript <<EOD
     activate
-    set modChoice to button returned of (display dialog "No mods folder was found in the source game files.\n\nDo you want to download them? (These can then be activated in-game)" buttons {"No", "Yes"} default button "No")
+    set modChoice to button returned of (display dialog "No mods folder was found in your Aquaria installation.\n\nDo you want to download and include them?\n(These can then be activated in-game)" buttons {"No", "Yes"} default button "No")
     return modChoice
 EOD
 }
@@ -80,22 +100,18 @@ copy_dir_if_present() {
     fi
 }
 
-notify() {
-    osascript -e "display notification \"$1\" with title \"Aquaria Updater\""
-}
-
 show_error() {
     local msg="${1//\"/\\\"}"
     # Re-enable output for the error dialog so it actually shows up
     exec > /dev/tty 2>/dev/null 
-    osascript -e "activate" -e "display dialog \"❌ Error: $msg\" buttons {\"OK\"} default button 1 with icon stop"
+    osascript -e "activate" -e "display dialog \"❌ ERROR: $msg\" buttons {\"OK\"} default button 1 with icon stop"
     exit 1
 }
 
 show_success() {
     local msg="${1//\"/\\\"}"
     # Re-enable output briefly for success message if needed
-    osascript -e "activate" -e "display dialog \"✅ Update Complete!\n\n$msg\" buttons {\"OK\"} default button 1 with icon note"
+    osascript -e "activate" -e "display dialog \"✅ UPDATE COMPLETE!\n\n$msg\" buttons {\"OK\"} default button 1 with icon note"
 }
 
 detect_binary_archs() {
@@ -187,8 +203,8 @@ resolve_original_assets_dir() {
 
     # Handling for .app selection
     elif [[ "$source_selection" == *.app ]]; then
-        notify "Alternate Mac version detected"
-        # For Mac Ambrosia version, also support Contents/Resources layout
+        echo "Alternate Mac version detected" >&2
+        # For Mac Ambrosia version, support Contents/Resources layout
         if required_assets_exist "$source_selection/Contents/Resources"; then
             resolved_assets_dir="$source_selection/Contents/Resources"
         # For wrapped macOS GOG version, support Contents/Resources/game/Aquaria.app layout
@@ -196,18 +212,18 @@ resolve_original_assets_dir() {
             resolved_assets_dir="$source_selection/Contents/Resources/game/Aquaria.app"
         else
             MISSING_ASSET_FOLDERS=$(missing_required_assets "$source_selection")
-            show_error "Required asset folders are missing from Mac .app.\nChecked:\n$source_selection (missing: $MISSING_ASSET_FOLDERS)"
+            show_error "Required Aquaria asset folders are missing from Mac .app.\n\nChecked:\n$source_selection \n\n Missing: $MISSING_ASSET_FOLDERS"
         fi
 
     # For executable selections (Windows .exe or Linux binary), use containing folder
     elif [ -f "$source_selection" ] && required_assets_exist "${source_selection:h}"; then
         # Handling for Windows .exe
         if [[ "$source_selection" == *.exe ]]; then
-            notify "Windows executable detected. Using containing folder as source."
+            echo "Windows executable detected. Using containing folder as source." >&2
             resolved_assets_dir="${source_selection:h}"
         # Handling for Linux executable (no extension)
         elif [[ "${source_selection:t:l}" == "aquaria" ]]; then
-            notify "Linux executable detected. Using containing folder as source."
+            echo "Linux executable detected. Using containing folder as source." >&2
             resolved_assets_dir="${source_selection:h}"
         else
             show_error "Selected file does not appear to be a valid Aquaria executable."
@@ -216,7 +232,7 @@ resolve_original_assets_dir() {
 
     # Exit with error if no valid source of original game assets was found
     if [ -z "$resolved_assets_dir" ]; then
-        show_error "Invalid selection: $source_selection\n"
+        show_error "Invalid source selection: $source_selection\n"
         exit 1
     fi
 
@@ -226,6 +242,15 @@ resolve_original_assets_dir() {
 # =============================================================================
 # SETUP & SELECTION
 # =============================================================================
+
+# Check if running script in terminal or as a bundled app
+RUNNING_IN_TERMINAL=false
+if [ -t 1 ]; then
+  echo "Running script from Terminal"
+  RUNNING_IN_TERMINAL=true
+else
+  echo "Running updater app bundle"
+fi
 
 # Set target app path
 TARGET_APP="/Applications/AquariaOSE.app"
@@ -238,6 +263,12 @@ SCRIPT_DIR="${0:A:h}"
 
 # Locate the game assets (.app/Contents/Resources)
 RESOURCES_DIR="$SCRIPT_DIR/../Resources"
+
+# Set resources directory to /assets when running script from terminal
+if [ "$RUNNING_IN_TERMINAL" = true ]; then
+    echo "Setting resources directory to /assets for terminal execution"
+    RESOURCES_DIR="$SCRIPT_DIR/../assets"
+fi
 
 # Locate the .app wrapper
 APP_BUNDLE_DIR="${SCRIPT_DIR:h:h}"
@@ -262,7 +293,7 @@ MODS_EXTRACTED_DIR=""
 # Select source
 SOURCE_SELECTION=$(pick_source)
 if [ -z "$SOURCE_SELECTION" ]; then
-    show_error "No source installation was selected."
+    show_error "No Aquaria source installation was selected."
     exit 1
 fi
 
@@ -273,7 +304,7 @@ ORIGINAL_ASSETS_DIR=$(resolve_original_assets_dir "$SOURCE_SELECTION") || exit 1
 # APP BUILD
 # =============================================================================
 
-notify "Building AquariaOSE in staging area..."
+echo "Building AquariaOSE in staging area..."
 
 # Create Target Directory
 mkdir -p "$BUILD_APP"
@@ -285,19 +316,19 @@ mkdir -p "$BUILD_APP/Contents/Frameworks"
 
 
 # Copy original game asset folders and files from official installation
-notify "Copying original game files..."
+echo "Copying original game files..."
 for f in data gfx mus scripts sfx vox _mods; do
     copy_dir_if_present "$ORIGINAL_ASSETS_DIR/$f" "$BUILD_APP"
 done
 
 # Copy custom assets to updated app bundle
-notify "Applying custom icon and metadata..."
+echo "Applying custom icon and metadata..."
 
 # Copy Info.plist
 if [[ -f "$RESOURCES_DIR/aquariaOSE.plist" ]]; then
     cp "$RESOURCES_DIR/aquariaOSE.plist" "$BUILD_APP/Contents/Info.plist"
 else
-    echo "Warning: aquariaOSE.plist not found in bundle."
+    echo "Warning: aquariaOSE.plist not found."
 fi
 
 # Copy Icon
@@ -305,7 +336,7 @@ if [[ -f "$RESOURCES_DIR/aquariaOSE.icns" ]]; then
     mkdir -p "$BUILD_APP/Contents/Resources"
     cp "$RESOURCES_DIR/aquariaOSE.icns" "$BUILD_APP/Contents/Resources/aquariaOSE.icns"
 else
-    echo "Warning: aquariaOSE.icns not found in bundle."
+    echo "Warning: aquariaOSE.icns not found."
 fi
 
 
@@ -323,21 +354,24 @@ else
 
     # Select AquariaOSE update branch (master or experimental)
     BRANCH=$(pick_branch)
-    if [ "$BRANCH" = "CANCEL" ]; then exit 0; fi
+    if [ "$BRANCH" = "CANCEL" ]; then 
+        show_error "No GitHub branch selected.\n\nUpdate cancelled."
+        exit 0
+    fi
 
     # AquariaOSE Git repo
     # Create a temporary directory for downloads and extraction
     TEMP_DIR="$RUN_DIR/download"
     
     # Download repo zip from GitHub
-    notify "Downloading $BRANCH branch..."
+    echo "Downloading $BRANCH branch..."
     OSE_EXTRACTED_DIR=$(download_repo_branch_zip "$BRANCH" "$TEMP_DIR")
     OSE_DOWNLOAD_STATUS=$?
     if [ $OSE_DOWNLOAD_STATUS -ne 0 ] || [ -z "$OSE_EXTRACTED_DIR" ]; then
         if [ $OSE_DOWNLOAD_STATUS -eq 12 ]; then
             show_error "Failed to unzip downloaded update files."
         else
-            show_error "Failed to download update files. Check internet and selected branch."
+            show_error "Failed to download update files.\n\nCheck internet and selected branch."
         fi
     fi
 
@@ -363,14 +397,14 @@ if [ "$MODS_DOWNLOAD_REQUESTED" = true ]; then
     if [ "$IS_RELEASE_VERSION" = true ] || [ -z "$OSE_EXTRACTED_DIR" ] || [ ! -d "$OSE_EXTRACTED_DIR" ]; then
         TEMP_DIR="$RUN_DIR/download_mods"
 
-        notify "Downloading $MODS_BRANCH branch for mods..."
+        echo "Downloading $MODS_BRANCH branch for mods..."
         MODS_EXTRACTED_DIR=$(download_repo_branch_zip "$MODS_BRANCH" "$TEMP_DIR")
         MODS_DOWNLOAD_STATUS=$?
         if [ $MODS_DOWNLOAD_STATUS -ne 0 ] || [ -z "$MODS_EXTRACTED_DIR" ]; then
             if [ $MODS_DOWNLOAD_STATUS -eq 12 ]; then
-                notify "Skipping optional mods: failed to unzip downloaded mods files."
+                echo "Skipping optional mods: failed to unzip downloaded mods files."
             else
-                notify "Skipping optional mods: failed to download mods files."
+                echo "Skipping optional mods: failed to download mods files."
             fi
             MODS_DOWNLOAD_REQUESTED=false
         fi
@@ -383,13 +417,13 @@ if [ "$MODS_DOWNLOAD_REQUESTED" = true ]; then
     fi
 
     if [ "$MODS_DOWNLOAD_REQUESTED" = true ]; then
-        notify "Adding optional mods..."
+        echo "Adding optional mods..."
         cp -R "$MODS_EXTRACTED_DIR/game_scripts/_mods" "$BUILD_APP/" || show_error "Failed to copy _mods into AquariaOSE.app"
     fi
 fi
 
 # Merge updated OSE files (bundled assets or downloaded assets)
-notify "Merging updated scripts and data..."
+echo "Merging updated scripts and data..."
 
 DEST_RESOURCES="$BUILD_APP/"
 
@@ -428,11 +462,11 @@ if [[ -f "$BUNDLED_BINARY" ]]; then
     chmod +x "$BINARY_DEST"
     copy_sidecar_libraries "${BUNDLED_BINARY:h}" "$FRAMEWORKS_DEST"
 else
-    echo "No bundled binary found... Prompting for new binary"
+    echo "No bundled binary found. Prompting for new binary..."
     SELECTED_BINARY=$(pick_binary)
     
     if [ ! -z "$SELECTED_BINARY" ]; then
-        notify "Installing selected binary..."
+        echo "Installing selected binary..."
         validate_binary_archs "$SELECTED_BINARY"
         # Remove old binary (likely Intel)
         rm -f "$BINARY_DEST"
@@ -441,7 +475,7 @@ else
         chmod +x "$BINARY_DEST"
         copy_sidecar_libraries "${SELECTED_BINARY:h}" "$FRAMEWORKS_DEST"
     else
-        show_error "No binary selected. A compatible i386, x86_64, or arm64 binary is required."
+        show_error "No Aquaria binary selected.\n\nA compatible i386, x86_64, or arm64 binary is required."
     fi
 fi
 
@@ -455,7 +489,7 @@ if [ -f "$BINARY_DEST" ]; then
 fi
 
 # Security Signing
-notify "Signing app..."
+echo "Signing app..."
 
 if command -v xattr &> /dev/null; then
     xattr -cr "$BUILD_APP"
@@ -466,7 +500,7 @@ if command -v codesign &> /dev/null; then
 fi
 
 # Deploy staged app
-notify "Installing to Applications..."
+echo "Installing to Applications..."
 
 if [ -d "$TARGET_APP" ]; then
     if ! rm -rf "$TARGET_APP"; then
@@ -480,7 +514,7 @@ fi
 
 # Success message
 if [ -n "$BINARY_ARCHS" ]; then
-    show_success "Update Complete! AquariaOSE is ready in your Applications folder.\nInstalled binary architectures: $BINARY_ARCHS"
+    show_success "AquariaOSE is ready in your Applications folder.\n\nInstalled binary architecture: $BINARY_ARCHS"
 else
-    show_success "Update Complete! AquariaOSE is ready in your Applications folder."
+    show_success "AquariaOSE is ready in your Applications folder."
 fi
