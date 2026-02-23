@@ -1,6 +1,6 @@
 # Aquaria OSE Updater for Mac
 
-A small script-based utility that upgrades an existing **Aquaria** installation to the **Open Source Edition (OSE)**, compatible with modern macOS.
+A small script-based utility that upgrades an existing **Aquaria** installation to the **Open Source Edition (OSE)**, which is compatible with modern macOS.
 
 This tool is a companion to the [Aquaria Open Source Edition repository](https://github.com/AquariaOSE/Aquaria).
 
