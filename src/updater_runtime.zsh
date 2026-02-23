@@ -312,7 +312,6 @@ mkdir -p "$BUILD_APP"
 # Build macOS app structure (binary/libs are installed separately)
 mkdir -p "$BUILD_APP/Contents/Resources"
 mkdir -p "$BUILD_APP/Contents/MacOS"
-mkdir -p "$BUILD_APP/Contents/Frameworks"
 
 
 # Copy original game asset folders and files from official installation
@@ -449,18 +448,18 @@ fi
 # =============================================================================
 
 BINARY_DEST="$BUILD_APP/Contents/MacOS/aquaria"
-FRAMEWORKS_DEST="$BUILD_APP/Contents/Frameworks"
+BINARY_LIBS_DEST="$BUILD_APP/Contents/MacOS"
 BUNDLED_BINARY="$RESOURCES_DIR/aquaria"
 BINARY_ARCHS=""
 
-mkdir -p "$FRAMEWORKS_DEST"
+mkdir -p "$BINARY_LIBS_DEST"
 
 if [[ -f "$BUNDLED_BINARY" ]]; then
     echo "Using bundled binary..."
     validate_binary_archs "$BUNDLED_BINARY"
     cp "$BUNDLED_BINARY" "$BINARY_DEST"
     chmod +x "$BINARY_DEST"
-    copy_sidecar_libraries "${BUNDLED_BINARY:h}" "$FRAMEWORKS_DEST"
+    copy_sidecar_libraries "${BUNDLED_BINARY:h}" "$BINARY_LIBS_DEST"
 else
     echo "No bundled binary found. Prompting for new binary..."
     SELECTED_BINARY=$(pick_binary)
@@ -473,7 +472,7 @@ else
         # Copy new one
         cp "$SELECTED_BINARY" "$BINARY_DEST"
         chmod +x "$BINARY_DEST"
-        copy_sidecar_libraries "${SELECTED_BINARY:h}" "$FRAMEWORKS_DEST"
+        copy_sidecar_libraries "${SELECTED_BINARY:h}" "$BINARY_LIBS_DEST"
     else
         show_error "No Aquaria binary selected.\n\nA compatible i386, x86_64, or arm64 binary is required."
     fi
