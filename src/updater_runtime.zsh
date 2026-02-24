@@ -320,6 +320,12 @@ for f in data gfx mus scripts sfx vox _mods; do
     copy_dir_if_present "$ORIGINAL_ASSETS_DIR/$f" "$BUILD_APP"
 done
 
+# Copy default settings XML if present
+default_settings_matches=("$ORIGINAL_ASSETS_DIR"/default*.xml(N))
+if [ ${#default_settings_matches[@]} -gt 0 ]; then
+    cp "$default_settings_matches[1]" "$BUILD_APP/default_usersettings.xml" || show_error "Failed to copy default user settings file from source installation."
+fi
+
 # Copy custom assets to updated app bundle
 echo "Applying custom icon and metadata..."
 
